@@ -52,34 +52,45 @@ Open [http://localhost:3000](http://localhost:3000) (proxied through the Quant e
 
 ## Deploying to Quant Cloud
 
-### 1. Create the application in Quant Cloud
+### 1. Get your API token
 
-In the Quant Cloud dashboard, create a new **App** application. Note the application slug — it's set automatically from the repo name.
+Generate a scoped API token from the [Quant Dashboard](https://dashboard.quantcdn.io). The token inherits your user role and permissions within your organisation. You'll use the same token for both the GitHub Actions CI (to push images and trigger deploys) and as the runtime credential for the app itself.
 
-### 2. Configure GitHub repository secrets
+### 2. Create the application in Quant Cloud
+
+In the Quant Cloud dashboard, create a new **App** application. The application slug is set from the repo name.
+
+### 3. Configure GitHub repository secrets
 
 In your GitHub repo → **Settings → Secrets and variables → Actions**, add:
 
 | Type | Name | Value |
 |---|---|---|
-| Secret | `QUANT_API_KEY` | Your Quant Cloud API key (from the dashboard) |
+| Secret | `QUANT_API_KEY` | Your Quant API token |
 | Variable | `QUANT_ORGANIZATION` | Your org machine name — note US spelling, required by the CI actions |
 
-### 3. Add runtime secrets in Quant Cloud
+### 4. Configure runtime environment in Quant Cloud
 
-In the Quant Cloud dashboard → your application → **Configuration → Environment variables**, add:
+In the Quant Cloud dashboard → your application → **Environment & Secrets tab**.
+
+**Sensitive values → add as Secrets** (encrypted at rest, write-only, never visible in logs):
+
+| Secret name | Value |
+|---|---|
+| `QUANT_API_TOKEN` | Your Quant API token |
+
+**Non-sensitive values → add as Environment variables:**
 
 | Variable | Value |
 |---|---|
-| `QUANT_API_TOKEN` | Your Quant Cloud API token |
 | `QUANT_ORGANISATION` | Your organisation machine name |
 | `QUANT_DEFAULT_MODEL` | *(optional)* e.g. `anthropic.claude-sonnet-4-5` |
 | `QUANT_SYSTEM_PROMPT` | *(optional)* Any fixed system prompt |
 | `QUANT_MAX_TOKENS` | *(optional)* e.g. `16384` for longer responses |
 
-Mark `QUANT_API_TOKEN` as a **secret** so it is encrypted at rest and never exposed in logs.
+> **Note:** Both secret and environment variable changes require an environment redeployment to take effect. Trigger one from the dashboard after saving, or push a new commit.
 
-### 4. Push to deploy
+### 5. Push to deploy
 
 ```bash
 git push origin main
