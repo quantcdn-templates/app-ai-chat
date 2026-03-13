@@ -5,47 +5,53 @@ import { ChatWindow } from './components/ChatWindow.js';
 import { AgentPicker } from './components/AgentPicker.js';
 import { ModelPicker } from './components/ModelPicker.js';
 
+const formatToolName = (name) => (name ?? '').replace(/_/g, ' ');
+
 function App() {
-  const [messages, setMessages]         = useState([]);
-  const [sessionId, setSessionId]       = useState(() => sessionStorage.getItem('sessionId'));
-  const [models, setModels]             = useState([]);
-  const [agents, setAgents]             = useState([]);
+  const [messages, setMessages]           = useState([]);
+  const [sessionId, setSessionId]         = useState(() => sessionStorage.getItem('sessionId'));
+  const [models, setModels]               = useState([]);
+  const [agents, setAgents]               = useState([]);
   const [selectedModel, setSelectedModel] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
-  const [streaming, setStreaming]       = useState(false);
-  const [activeTools, setActiveTools]   = useState([]);
-  const [completedTools, setCompleted]  = useState([]);
-  const [toolsFading, setFading]        = useState(false);
-  const [orchStatus, setOrchStatus]     = useState(null);
-  const [input, setInput]               = useState('');
-  const [error, setError]               = useState(null);
-  const toolIndexRef = useRef(0);
-  const pollRef      = useRef(null);
+  const [streaming, setStreaming]         = useState(false);
+  const [activeTools, setActiveTools]     = useState([]);
+  const [completedTools, setCompleted]    = useState([]);
+  const [toolsFading, setFading]          = useState(false);
+  const [orchStatus, setOrchStatus]       = useState(null);
+  const [input, setInput]                 = useState('');
+  const [error, setError]                 = useState(null);
+  const pollRef = useRef(null);
 
-  // Load config, models, and agents on mount
+  // Load config, models, and agents on mount — fetched concurrently, resolved together
+  // so QUANT_DEFAULT_MODEL is always applied before selecting the default model.
   useEffect(() => {
-    // Fetch default model from server config (QUANT_DEFAULT_MODEL env var)
-    let defaultModelId = 'amazon.nova-lite-v1:0';
-    fetch('/api/config')
-      .then((r) => r.json())
-      .then((data) => { defaultModelId = data.defaultModel ?? defaultModelId; })
-      .catch(() => {});
-
-    fetch('/api/models')
-      .then((r) => r.json())
-      .then((data) => {
+    Promise.all([
+      fetch('/api/config').then((r) => r.json()).catch(() => ({})),
+      fetch('/api/models').then((r) => r.json()).catch(() => null),
+      fetch('/api/agents').then((r) => r.json()).catch(() => null),
+    ]).then(([configData, modelsData, agentsData]) => {
+      const defaultModelId = configData.defaultModel ?? 'amazon.nova-lite-v1:0';
+      if (modelsData) {
         // SDK listAIModels returns { models: [{ id, name, ... }] }
-        const list = data.models ?? [];
+        const list = modelsData.models ?? [];
         setModels(list);
         const preferred = list.find((m) => m.id === defaultModelId) ?? list[0];
         setSelectedModel(preferred?.id ?? null);
-      })
-      .catch(() => setError('Failed to load models'));
+      } else {
+        setError('Failed to load models');
+      }
+      if (agentsData) {
+        setAgents(agentsData.agents ?? []);
+      }
+    });
+  }, []);
 
-    fetch('/api/agents')
-      .then((r) => r.json())
-      .then((data) => setAgents(data.agents ?? []))
-      .catch(() => setError('Failed to load agents'));
+  // Clear poll interval on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, []);
 
   // Persist sessionId
@@ -89,8 +95,7 @@ function App() {
       try {
         const r = await fetch(`/api/orchestration/poll?url=${encodeURIComponent(pollUrl)}`);
         const data = await r.json();
-        const msg = data.message ?? `Status: ${data.status}`;
-        setOrchStatus(msg);
+        setOrchStatus(data.message ?? `Status: ${data.status}`);
         if (data.status === 'complete' || data.status === 'failed') {
           clearInterval(pollRef.current);
           pollRef.current = null;
@@ -135,10 +140,8 @@ function App() {
     setActiveTools([]);
     setCompleted([]);
     setOrchStatus(null);
-    toolIndexRef.current = 0;
 
-    // Track assistant response being built
-    let assistantContent = '';
+    // Track whether the assistant message slot has been pushed yet
     let assistantAdded = false;
 
     try {
@@ -181,14 +184,14 @@ function App() {
             switch (currentEvent) {
               case 'content': {
                 const delta = data.delta ?? '';
-                assistantContent += delta;
                 if (!assistantAdded) {
-                  setMessages((prev) => [...prev, { role: 'assistant', content: assistantContent }]);
+                  setMessages((prev) => [...prev, { role: 'assistant', content: delta }]);
                   assistantAdded = true;
                 } else {
                   setMessages((prev) => {
                     const next = [...prev];
-                    next[next.length - 1] = { role: 'assistant', content: assistantContent };
+                    const last = next[next.length - 1];
+                    next[next.length - 1] = { ...last, content: last.content + delta };
                     return next;
                   });
                 }
@@ -200,12 +203,12 @@ function App() {
                 break;
               }
               case 'tool_start': {
-                const label = `Running: ${(data.name ?? '').replace(/_/g, ' ')}...`;
+                const label = `Running: ${formatToolName(data.name)}...`;
                 setActiveTools((prev) => [...prev, { name: data.name, label }]);
                 break;
               }
               case 'tool_input_progress': {
-                const label = `Preparing: ${(data.name ?? '').replace(/_/g, ' ')}...`;
+                const label = `Preparing: ${formatToolName(data.name)}...`;
                 setActiveTools((prev) => {
                   const next = [...prev];
                   const idx = next.findLastIndex((t) => t.name === data.name);
@@ -215,9 +218,8 @@ function App() {
                 break;
               }
               case 'tool_complete': {
-                const index = toolIndexRef.current++;
                 setActiveTools((prev) => prev.filter((t) => t.name !== data.name));
-                setCompleted((prev) => [...prev, { name: data.name, result: data.result, index }]);
+                setCompleted((prev) => [...prev, { name: data.name, result: data.result, index: prev.length }]);
                 break;
               }
               case 'tool_request': {
@@ -256,7 +258,6 @@ function App() {
               // start, turn_start, tool_round, keepalive: informational, no UI action
               default: break;
             }
-            currentEvent = '';
           }
         }
       }
