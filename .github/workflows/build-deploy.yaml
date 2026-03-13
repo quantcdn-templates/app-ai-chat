@@ -1,0 +1,40 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Initialize Quant Cloud
+        id: quant-init
+        uses: quantcdn/quant-cloud-init-action@v1
+        with:
+          organization: ${{ vars.QUANT_ORGANIZATION }}
+          api-key: ${{ secrets.QUANT_API_KEY }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.quant-init.outputs.registry }}/${{ steps.quant-init.outputs.application }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to Quant Cloud
+        uses: quantcdn/quant-cloud-environment-state-action@v1
+        with:
+          organization: ${{ vars.QUANT_ORGANIZATION }}
+          api-key: ${{ secrets.QUANT_API_KEY }}
+          application: ${{ steps.quant-init.outputs.application }}
+          environment: ${{ steps.quant-init.outputs.environment }}
+          image: ${{ steps.quant-init.outputs.registry }}/${{ steps.quant-init.outputs.application }}:latest
