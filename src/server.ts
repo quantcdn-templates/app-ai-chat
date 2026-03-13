@@ -73,6 +73,57 @@ app.post('/api/sessions', async (c) => {
 
 // --- API routes (Task 5) ---
 
+// Proxy for async orchestration polling — keeps QUANT_API_TOKEN server-side
+app.get('/api/orchestration/poll', async (c) => {
+  const pollUrl = c.req.query('url');
+  if (!pollUrl) return c.json({ error: 'url query param required' }, 400);
+  const res = await fetch(pollUrl, {
+    headers: { 'Authorization': `Bearer ${TOKEN}` },
+  });
+  return c.json(await res.json());
+});
+
+app.post('/api/chat/stream', async (c) => {
+  if (!ORG) return c.json({ error: 'QUANT_ORGANISATION not set' }, 500);
+
+  const { message, sessionId, modelId, agentId } = await c.req.json<{
+    message: string;
+    sessionId: string | null;
+    modelId: string | null;
+    agentId: string | null;
+  }>();
+
+  c.header('Content-Type', 'text/event-stream');
+  c.header('Cache-Control', 'no-cache');
+  c.header('Connection', 'keep-alive');
+
+  const axiosOpts = { responseType: 'stream' as const };
+
+  const upstream = agentId
+    ? await agentsApi.chatWithAIAgent(
+        ORG,
+        agentId,
+        { message, sessionId: sessionId ?? undefined, stream: true },
+        axiosOpts,
+      )
+    : await inferenceApi.chatInferenceStream(
+        ORG,
+        {
+          messages: [{ role: 'user', content: message }],
+          modelId: modelId ?? process.env.QUANT_DEFAULT_MODEL ?? 'amazon.nova-lite-v1:0',
+          sessionId: sessionId ?? undefined,
+          systemPrompt: process.env.QUANT_SYSTEM_PROMPT,
+        },
+        axiosOpts,
+      );
+
+  return stream(c, async (s) => {
+    for await (const chunk of upstream.data as AsyncIterable<Buffer>) {
+      await s.write(chunk);
+    }
+  });
+});
+
 // --- Start server ---
 const port = parseInt(process.env.PORT ?? '3001', 10);
 serve({ fetch: app.fetch, port }, () => {
