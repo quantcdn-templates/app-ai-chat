@@ -2,9 +2,22 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>AI Chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Chat — Quant Cloud</title>
+  <link rel="stylesheet" href="/public/style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "preact":        "https://esm.sh/preact@10",
+      "preact/hooks":  "https://esm.sh/preact@10/hooks",
+      "htm/preact":    "https://esm.sh/htm@3/preact",
+      "marked":        "https://esm.sh/marked@12"
+    }
+  }
+  </script>
 </head>
 <body>
-  <p>Loading...</p>
+  <div id="app"></div>
+  <script type="module" src="/public/app.js"></script>
 </body>
 </html>
