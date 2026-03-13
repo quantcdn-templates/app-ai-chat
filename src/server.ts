@@ -44,7 +44,24 @@ app.get('/', (c) => c.html(readFileSync(INDEX_HTML, 'utf-8')));
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
-// --- API routes (Tasks 3–5) ---
+// Expose non-secret config values to the frontend
+app.get('/api/config', (c) => c.json({
+  defaultModel: process.env.QUANT_DEFAULT_MODEL ?? 'amazon.nova-lite-v1:0',
+}));
+
+app.get('/api/models', async (c) => {
+  if (!ORG) return c.json({ error: 'QUANT_ORGANISATION not set' }, 500);
+  const res = await modelsApi.listAIModels(ORG, 'chat');
+  return c.json(res.data);
+});
+
+app.get('/api/agents', async (c) => {
+  if (!ORG) return c.json({ error: 'QUANT_ORGANISATION not set' }, 500);
+  const res = await agentsApi.listAIAgents(ORG);
+  return c.json(res.data);
+});
+
+// --- API routes (Tasks 4–5) ---
 
 // --- Start server ---
 const port = parseInt(process.env.PORT ?? '3001', 10);
