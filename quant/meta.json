@@ -1,0 +1,8 @@
+{
+  "title": "AI Chat Starter Kit",
+  "url": "/deploy/app/app-ai-chat",
+  "summary": "A streaming AI chat interface built with Hono and Preact. Supports agents, model selection, and tool execution UI out of the box.",
+  "categories": ["ai", "nodejs"],
+  "tags": ["ai", "chat", "hono", "preact", "streaming", "agents"],
+  "template_type": "app"
+}
