@@ -12,7 +12,7 @@ function ToolChip({ tool }) {
         onClick=${() => setOpen(!open)}
         title="Click to ${open ? 'collapse' : 'expand'} result"
       >
-        <span class="tool-chip-check">✓</span>
+        <span class="check-ring">✓</span>
         ${label}
       </button>
       ${open && html`
@@ -27,7 +27,7 @@ function ToolChip({ tool }) {
 }
 
 export function ToolCallBlock({ activeTools, completedTools, orchStatus, fading }) {
-  const hasActive = activeTools.length > 0;
+  const hasActive    = activeTools.length > 0;
   const hasCompleted = completedTools.length > 0;
 
   if (!hasActive && !hasCompleted && !orchStatus) return null;
@@ -35,13 +35,20 @@ export function ToolCallBlock({ activeTools, completedTools, orchStatus, fading 
   return html`
     <div class="tool-block">
       ${(hasActive || orchStatus) && html`
-        <div class="tool-status">
-          <span class="spinner" aria-hidden="true"></span>
-          <span>${orchStatus ?? (activeTools[activeTools.length - 1]?.label ?? 'Working...')}</span>
+        <div class="tool-pills-active">
+          ${orchStatus
+            ? html`<span class="tool-pill tool-pill--orch"><span class="pill-dot"></span>${orchStatus}</span>`
+            : activeTools.map((t) => html`
+                <span class="tool-pill tool-pill--running" key=${t.name}>
+                  <span class="pill-dot"></span>
+                  ${(t.name || '').replace(/_/g, ' ')}
+                </span>
+              `)
+          }
         </div>
       `}
       ${hasCompleted && html`
-        <div class=${"tool-chips" + (fading ? " fading" : "")}>
+        <div class=${'tool-chips' + (fading ? ' fading' : '')}>
           ${completedTools.map((t) => html`<${ToolChip} key=${t.name + t.index} tool=${t} />`)}
         </div>
       `}

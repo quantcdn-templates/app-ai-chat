@@ -7,24 +7,65 @@ import { ModelPicker } from './components/ModelPicker.js';
 
 const formatToolName = (name) => (name ?? '').replace(/_/g, ' ');
 
+// Maps browser MIME types to API { kind, format } descriptors
+const MIME_MAP = {
+  'image/jpeg':  { kind: 'image',    format: 'jpeg' },
+  'image/png':   { kind: 'image',    format: 'png'  },
+  'image/gif':   { kind: 'image',    format: 'gif'  },
+  'image/webp':  { kind: 'image',    format: 'webp' },
+  'application/pdf': { kind: 'document', format: 'pdf'  },
+  'text/csv':    { kind: 'document', format: 'csv'  },
+  'text/plain':  { kind: 'document', format: 'txt'  },
+  'text/markdown': { kind: 'document', format: 'md' },
+  'text/html':   { kind: 'document', format: 'html' },
+  'application/msword': { kind: 'document', format: 'doc' },
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': { kind: 'document', format: 'docx' },
+  'application/vnd.ms-excel': { kind: 'document', format: 'xls' },
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': { kind: 'document', format: 'xlsx' },
+};
+
+async function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = (e) => resolve(e.target.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function processFiles(fileList) {
+  const result = [];
+  for (const file of fileList) {
+    const meta = MIME_MAP[file.type];
+    if (!meta) continue;
+    const data       = await readFileAsBase64(file);
+    const previewUrl = meta.kind === 'image' ? URL.createObjectURL(file) : null;
+    result.push({ id: crypto.randomUUID(), ...meta, name: file.name, data, previewUrl });
+  }
+  return result;
+}
+
 function App() {
   const [messages, setMessages]           = useState([]);
   const [sessionId, setSessionId]         = useState(() => sessionStorage.getItem('sessionId'));
-  const [models, setModels]               = useState([]);
-  const [agents, setAgents]               = useState([]);
+  const [models, setModels]               = useState(null);
+  const [agents, setAgents]               = useState(null);
   const [selectedModel, setSelectedModel] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [streaming, setStreaming]         = useState(false);
+  const [thinking, setThinking]           = useState(false);
   const [activeTools, setActiveTools]     = useState([]);
   const [completedTools, setCompleted]    = useState([]);
   const [toolsFading, setFading]          = useState(false);
   const [orchStatus, setOrchStatus]       = useState(null);
   const [input, setInput]                 = useState('');
   const [error, setError]                 = useState(null);
-  const pollRef = useRef(null);
+  const [attachments, setAttachments]     = useState([]);
+  const [dragActive, setDragActive]       = useState(false);
+  const pollRef    = useRef(null);
+  const fileInputRef = useRef(null);
 
-  // Load config, models, and agents on mount — fetched concurrently, resolved together
-  // so QUANT_DEFAULT_MODEL is always applied before selecting the default model.
+  // Load config, models, and agents on mount
   useEffect(() => {
     Promise.all([
       fetch('/api/config').then((r) => r.json()).catch(() => ({})),
@@ -33,7 +74,6 @@ function App() {
     ]).then(([configData, modelsData, agentsData]) => {
       const defaultModelId = configData.defaultModel ?? 'amazon.nova-lite-v1:0';
       if (modelsData) {
-        // SDK listAIModels returns { models: [{ id, name, ... }] }
         const list = modelsData.models ?? [];
         setModels(list);
         const preferred = list.find((m) => m.id === defaultModelId) ?? list[0];
@@ -41,17 +81,13 @@ function App() {
       } else {
         setError('Failed to load models');
       }
-      if (agentsData) {
-        setAgents(agentsData.agents ?? []);
-      }
+      setAgents(agentsData ? (agentsData.agents ?? []) : []);
     });
   }, []);
 
   // Clear poll interval on unmount
   useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
   // Persist sessionId
@@ -66,6 +102,7 @@ function App() {
     setActiveTools([]);
     setCompleted([]);
     setOrchStatus(null);
+    setThinking(false);
   }, []);
 
   const handleAgentChange = (agentId) => {
@@ -80,6 +117,7 @@ function App() {
 
   const finalizeTurn = useCallback(() => {
     setStreaming(false);
+    setThinking(false);
     setActiveTools([]);
     setFading(true);
     setTimeout(() => {
@@ -116,13 +154,24 @@ function App() {
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
-    if (!text || streaming) return;
+    if ((!text && !attachments.length) || streaming) return;
     setInput('');
     setError(null);
 
-    // Ensure session exists
+    const pendingAttachments = attachments;
+    setAttachments([]);
+
+    // Show user message and thinking state immediately for snappy UX
+    setMessages((prev) => [...prev, { role: 'user', content: text, attachments: pendingAttachments }]);
+    setStreaming(true);
+    setThinking(true);
+    setActiveTools([]);
+    setCompleted([]);
+    setOrchStatus(null);
+
+    // Agents manage their own sessions — only pre-create for direct model path
     let sid = sessionId;
-    if (!sid) {
+    if (!sid && !selectedAgent) {
       try {
         const r = await fetch('/api/sessions', { method: 'POST' });
         const data = await r.json();
@@ -130,18 +179,11 @@ function App() {
         setSessionId(sid);
       } catch {
         setError('Failed to create session');
+        finalizeTurn();
         return;
       }
     }
 
-    // Optimistically add user message
-    setMessages((prev) => [...prev, { role: 'user', content: text }]);
-    setStreaming(true);
-    setActiveTools([]);
-    setCompleted([]);
-    setOrchStatus(null);
-
-    // Track whether the assistant message slot has been pushed yet
     let assistantAdded = false;
 
     try {
@@ -153,6 +195,9 @@ function App() {
           sessionId: sid,
           modelId: selectedAgent ? null : selectedModel,
           agentId: selectedAgent,
+          files: pendingAttachments.length
+            ? pendingAttachments.map(({ kind, format, name, data }) => ({ kind, format, name, data }))
+            : undefined,
         }),
       });
 
@@ -173,7 +218,6 @@ function App() {
           if (line.startsWith('event: ')) {
             currentEvent = line.slice(7).trim();
           } else if (line === '') {
-            // SSE spec: blank line = event boundary, reset type
             currentEvent = '';
           } else if (line.startsWith('data: ')) {
             const raw = line.slice(6);
@@ -184,6 +228,7 @@ function App() {
             switch (currentEvent) {
               case 'content': {
                 const delta = data.delta ?? '';
+                setThinking(false);
                 if (!assistantAdded) {
                   setMessages((prev) => [...prev, { role: 'assistant', content: delta }]);
                   assistantAdded = true;
@@ -198,11 +243,11 @@ function App() {
                 break;
               }
               case 'session': {
-                // Agent path: confirm/update sessionId
                 if (data.sessionId) setSessionId(data.sessionId);
                 break;
               }
               case 'tool_start': {
+                setThinking(false);
                 const label = `Running: ${formatToolName(data.name)}...`;
                 setActiveTools((prev) => [...prev, { name: data.name, label }]);
                 break;
@@ -223,14 +268,10 @@ function App() {
                 break;
               }
               case 'tool_request': {
-                // v1: client-side tool execution not supported
-                // TODO: local tool execution hook — intercept here, call your own handler,
-                // then POST back to /api/chat/stream with the tool result and sessionId.
                 setError(`Agent requested client-side tool "${data.name}" (not supported in this starter kit)`);
                 break;
               }
               case 'orchestration_status': {
-                // May be emitted by some portal relay configurations
                 if (data.message) setOrchStatus(data.message);
                 break;
               }
@@ -238,15 +279,10 @@ function App() {
                 if (data.complete === true) {
                   finalizeTurn();
                 } else if (data.complete === false && data.stopReason === 'tool_request') {
-                  // TODO: local tool execution hook — intercept pendingTools here,
-                  // run your own handlers, POST results back to continue the conversation.
                   setError('Agent requested a client-side tool (not supported in this starter kit)');
                   finalizeTurn();
                 } else if (data.complete === false && data.orchestration?.pollUrl) {
-                  // SSE stream closes here; poll for completion via backend proxy
                   startOrchestrationPoll(data.orchestration.pollUrl);
-                  // Note: finalizeTurn() is called by the poll handler when complete —
-                  // streaming intentionally stays true (spinner remains) during polling
                 }
                 break;
               }
@@ -255,7 +291,6 @@ function App() {
                 finalizeTurn();
                 break;
               }
-              // start, turn_start, tool_round, keepalive: informational, no UI action
               default: break;
             }
           }
@@ -265,7 +300,7 @@ function App() {
       setError(err instanceof Error ? err.message : 'Stream failed');
       finalizeTurn();
     }
-  }, [input, streaming, sessionId, selectedModel, selectedAgent, finalizeTurn, startOrchestrationPoll]);
+  }, [input, attachments, streaming, sessionId, selectedModel, selectedAgent, finalizeTurn, startOrchestrationPoll]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -274,18 +309,48 @@ function App() {
     }
   };
 
+  // --- File handling ---
+  const addFiles = useCallback(async (fileList) => {
+    const newAttachments = await processFiles(Array.from(fileList));
+    if (newAttachments.length) setAttachments((prev) => [...prev, ...newAttachments]);
+  }, []);
+
+  const handleDrop = useCallback(async (e) => {
+    e.preventDefault();
+    setDragActive(false);
+    await addFiles(e.dataTransfer.files);
+  }, [addFiles]);
+
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault();
+    setDragActive(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e) => {
+    // Only clear if leaving the container entirely (not entering a child)
+    if (!e.currentTarget.contains(e.relatedTarget)) setDragActive(false);
+  }, []);
+
+  const handlePaste = useCallback(async (e) => {
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const files = items.filter((i) => i.kind === 'file').map((i) => i.getAsFile()).filter(Boolean);
+    if (files.length) await addFiles(files);
+  }, [addFiles]);
+
+  const removeAttachment = useCallback((id) => {
+    setAttachments((prev) => {
+      const removed = prev.find((a) => a.id === id);
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      return prev.filter((a) => a.id !== id);
+    });
+  }, []);
+
   return html`
     <div class="app">
-      <header class="toolbar">
-        <span class="logo">AI Chat</span>
-        <${AgentPicker} agents=${agents} selectedAgent=${selectedAgent} onChange=${handleAgentChange} />
-        <${ModelPicker}
-          models=${models}
-          selectedModel=${selectedModel}
-          onChange=${handleModelChange}
-          disabled=${!!selectedAgent}
-        />
-      </header>
+      <div class="app-header">
+        <span class="logo" onClick=${clearSession} title="New chat">quant<em>AI</em></span>
+        <button class="new-chat-btn" onClick=${clearSession} title="New chat">+</button>
+      </div>
 
       <${ChatWindow}
         messages=${messages}
@@ -294,30 +359,107 @@ function App() {
         orchStatus=${orchStatus}
         toolsFading=${toolsFading}
         streaming=${streaming}
+        thinking=${thinking}
       />
 
-      ${error && html`<div class="error-bar" role="alert">${error} <button onClick=${() => setError(null)}>✕</button></div>`}
+      ${error && html`
+        <div class="error-bar" role="alert">
+          ${error}
+          <button onClick=${() => setError(null)}>✕</button>
+        </div>
+      `}
 
-      <div class="input-bar">
-        <textarea
-          class="input-field"
-          placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-          value=${input}
-          onInput=${(e) => setInput(e.target.value)}
-          onKeyDown=${handleKeyDown}
-          disabled=${streaming}
-          rows="1"
-        />
-        <button
-          class="send-btn"
-          onClick=${sendMessage}
-          disabled=${streaming || !input.trim()}
+      <div class="input-area">
+        <div
+          class=${'input-card' + (dragActive ? ' drag-active' : '')}
+          onDragOver=${handleDragOver}
+          onDragEnter=${handleDragOver}
+          onDragLeave=${handleDragLeave}
+          onDrop=${handleDrop}
         >
-          ${streaming ? '…' : 'Send'}
-        </button>
+          ${dragActive && html`
+            <div class="drop-overlay">
+              <span class="drop-label">Drop files here</span>
+            </div>
+          `}
+
+          ${attachments.length > 0 && html`
+            <div class="attachment-bar">
+              ${attachments.map((a) => html`
+                <div class="attachment-chip" key=${a.id}>
+                  ${a.previewUrl
+                    ? html`<img class="attachment-thumb" src=${a.previewUrl} alt=${a.name} />`
+                    : html`<span class="attachment-icon">${docIcon(a.format)}</span>`
+                  }
+                  <span class="attachment-name">${a.name}</span>
+                  <button class="attachment-remove" onClick=${() => removeAttachment(a.id)} title="Remove">✕</button>
+                </div>
+              `)}
+            </div>
+          `}
+
+          <textarea
+            class="input-field"
+            placeholder="How can I help you today?"
+            value=${input}
+            onInput=${(e) => setInput(e.target.value)}
+            onKeyDown=${handleKeyDown}
+            onPaste=${handlePaste}
+            disabled=${streaming}
+            rows="1"
+          />
+
+          <div class="input-footer">
+            <button
+              class="attach-btn"
+              title="Attach file"
+              onClick=${() => fileInputRef.current?.click()}
+              disabled=${streaming}
+            >
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path d="M13.5 7.5l-6 6a3.5 3.5 0 01-4.95-4.95l6-6a2 2 0 012.83 2.83l-6 6a.5.5 0 01-.71-.71l5.5-5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <input
+              ref=${fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.pdf,.csv,.doc,.docx,.xls,.xlsx,.txt,.md,.html"
+              style="display:none"
+              onChange=${(e) => { addFiles(e.target.files); e.target.value = ''; }}
+            />
+
+            <${AgentPicker} agents=${agents} selectedAgent=${selectedAgent} onChange=${handleAgentChange} />
+            <${ModelPicker}
+              models=${models}
+              selectedModel=${selectedModel}
+              onChange=${handleModelChange}
+              disabled=${!!selectedAgent}
+            />
+
+            <div class="input-spacer" />
+
+            <button
+              class="send-btn"
+              onClick=${sendMessage}
+              disabled=${streaming || (!input.trim() && !attachments.length)}
+              title="Send"
+            >
+              ${streaming
+                ? html`<svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="1.5"/></svg>`
+                : html`<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 11V3M3 7l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+              }
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   `;
+}
+
+function docIcon(format) {
+  const icons = { pdf: '📄', csv: '📊', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊', txt: '📄', md: '📄', html: '🌐' };
+  return icons[format] ?? '📎';
 }
 
 render(html`<${App} />`, document.getElementById('app'));

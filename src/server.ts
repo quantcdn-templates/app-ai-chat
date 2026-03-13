@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
@@ -14,8 +15,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // --- SDK setup ---
-const BASE_URL     = process.env.QUANT_BASE_URL ?? 'https://dashboard.quantcdn.io';
+const BASE_URL      = process.env.QUANT_BASE_URL ?? 'https://dashboard.quantcdn.io';
 const DEFAULT_MODEL = process.env.QUANT_DEFAULT_MODEL ?? 'amazon.nova-lite-v1:0';
+const MAX_TOKENS    = parseInt(process.env.QUANT_MAX_TOKENS ?? '8192', 10);
 
 const config = new Configuration({
   basePath: BASE_URL,
@@ -30,14 +32,33 @@ const sessionsApi  = new AISessionsApi(config);
 const ORG   = process.env.QUANT_ORGANISATION ?? '';
 const TOKEN = process.env.QUANT_API_TOKEN ?? '';
 
-// Static assets:
-//   dev  (NODE_ENV unset): tsx runs from project root, files are at src/public/
-//   prod (NODE_ENV=production): Dockerfile copies src/public/ to /app/public/
-// serveStatic root is the *parent* of the public/ folder so that the
-// /public/* URL prefix maps to the correct directory on disk.
 const IS_PROD    = process.env.NODE_ENV === 'production';
-const STATIC_ROOT = IS_PROD ? '.' : 'src';   // /public/x -> ./public/x or src/public/x
+const STATIC_ROOT = IS_PROD ? '.' : 'src';
 const INDEX_HTML  = readFileSync(resolve(IS_PROD ? 'public' : 'src/public', 'index.html'), 'utf-8');
+
+// --- Simple TTL cache for static-ish lists ---
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+interface CacheEntry<T> { data: T; at: number; }
+let modelsCache: CacheEntry<unknown> | null = null;
+let agentsCache: CacheEntry<unknown> | null = null;
+
+async function fetchModels() {
+  const res = await modelsApi.listAIModels(ORG, 'chat');
+  modelsCache = { data: res.data, at: Date.now() };
+  return modelsCache.data;
+}
+
+async function fetchAgents() {
+  const res = await agentsApi.listAIAgents(ORG);
+  const data = res.data as any;
+  const agents = (data.agents ?? []).filter((a: any) => !a.isGlobal);
+  agentsCache = { data: { agents }, at: Date.now() };
+  return agentsCache.data;
+}
+
+// Pre-warm both caches at startup so first page load is instant
+if (ORG) Promise.all([fetchModels(), fetchAgents()]).catch(() => {});
 
 // --- App ---
 const app = new Hono();
@@ -62,13 +83,15 @@ app.use('/api/chat/*', requireOrg);
 app.get('/api/config', (c) => c.json({ defaultModel: DEFAULT_MODEL }));
 
 app.get('/api/models', async (c) => {
-  const res = await modelsApi.listAIModels(ORG, 'chat');
-  return c.json(res.data);
+  const fresh = modelsCache && Date.now() - modelsCache.at < CACHE_TTL_MS;
+  const data = fresh ? modelsCache!.data : await fetchModels();
+  return c.json(data);
 });
 
 app.get('/api/agents', async (c) => {
-  const res = await agentsApi.listAIAgents(ORG);
-  return c.json(res.data);
+  const fresh = agentsCache && Date.now() - agentsCache.at < CACHE_TTL_MS;
+  const data = fresh ? agentsCache!.data : await fetchAgents();
+  return c.json(data);
 });
 
 app.post('/api/sessions', async (c) => {
@@ -91,37 +114,65 @@ app.get('/api/orchestration/poll', async (c) => {
   return c.json(await res.json());
 });
 
+// File attachment descriptor sent by the frontend
+interface FileAttachment {
+  kind: 'image' | 'document';
+  format: string;  // e.g. 'jpeg', 'png', 'pdf'
+  name: string;
+  data: string;    // base64-encoded bytes
+}
+
+// Build a multimodal content array from files + text
+function buildContent(files: FileAttachment[], text: string) {
+  const blocks: object[] = files.map((f) =>
+    f.kind === 'image'
+      ? { image: { format: f.format, source: { bytes: f.data } } }
+      : { document: { format: f.format, name: f.name, source: { bytes: f.data } } },
+  );
+  if (text) blocks.push({ text });
+  return blocks;
+}
+
 app.post('/api/chat/stream', async (c) => {
-  const { message, sessionId, modelId, agentId } = await c.req.json<{
+  const { message, sessionId, modelId, agentId, files } = await c.req.json<{
     message: string;
     sessionId: string | null;
     modelId: string | null;
     agentId: string | null;
+    files?: FileAttachment[];
   }>();
 
   c.header('Content-Type', 'text/event-stream');
   c.header('Cache-Control', 'no-cache');
   c.header('Connection', 'keep-alive');
 
-  const axiosOpts = { responseType: 'stream' as const };
+  // Both direct inference and agent paths use chatInferenceStream.
+  // Agents are selected by passing agentId in the request body (undocumented
+  // but supported field — the agent's system prompt, model, and tools are
+  // applied server-side and the response is true SSE).
+  const userContent = files?.length ? buildContent(files, message) : message;
 
-  const upstream = agentId
-    ? await agentsApi.chatWithAIAgent(
-        ORG,
-        agentId,
-        { message, sessionId: sessionId ?? undefined, stream: true },
-        axiosOpts,
-      )
-    : await inferenceApi.chatInferenceStream(
-        ORG,
-        {
-          messages: [{ role: 'user', content: message }],
-          modelId: modelId ?? DEFAULT_MODEL,
-          sessionId: sessionId ?? undefined,
-          systemPrompt: process.env.QUANT_SYSTEM_PROMPT,
-        },
-        axiosOpts,
-      );
+  const requestBody: any = {
+    messages: [{ role: 'user', content: userContent }],
+    modelId: modelId ?? DEFAULT_MODEL,
+    sessionId: sessionId ?? undefined,
+    maxTokens: MAX_TOKENS,
+  };
+
+  if (agentId) {
+    requestBody.agentId = agentId;
+  } else if (process.env.QUANT_SYSTEM_PROMPT) {
+    requestBody.systemPrompt = process.env.QUANT_SYSTEM_PROMPT;
+  }
+
+  const upstream = await inferenceApi.chatInferenceStream(
+    ORG,
+    requestBody,
+    {
+      responseType: 'stream' as const,
+      headers: { Accept: 'text/event-stream' },
+    },
+  );
 
   return stream(c, async (s) => {
     for await (const chunk of upstream.data as AsyncIterable<Buffer>) {
