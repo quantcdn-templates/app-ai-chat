@@ -3,3 +3,10 @@ dist/
 .env
 .DS_Store
 *.js.map
+*.log
+npm-debug.log*
+*.tsbuildinfo
+.env.local
+.env.*.local
+coverage/
+*.d.ts.map
