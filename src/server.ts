@@ -61,7 +61,17 @@ app.get('/api/agents', async (c) => {
   return c.json(res.data);
 });
 
-// --- API routes (Tasks 4–5) ---
+app.post('/api/sessions', async (c) => {
+  if (!ORG) return c.json({ error: 'QUANT_ORGANISATION not set' }, 500);
+  const res = await sessionsApi.createAISession(ORG, {
+    userId: 'anonymous',
+    sessionGroup: 'ai-chat',
+    expirationMinutes: 60,
+  });
+  return c.json({ sessionId: res.data.sessionId });
+});
+
+// --- API routes (Task 5) ---
 
 // --- Start server ---
 const port = parseInt(process.env.PORT ?? '3001', 10);
