@@ -175,7 +175,7 @@ app.post('/api/chat/stream', async (c) => {
   );
 
   return stream(c, async (s) => {
-    for await (const chunk of upstream.data as AsyncIterable<Buffer>) {
+    for await (const chunk of upstream.data as unknown as AsyncIterable<Buffer>) {
       await s.write(chunk);
     }
   });
