@@ -1,7 +1,13 @@
 services:
   app:
+    image: ghcr.io/quantcdn-templates/app-ai-chat:latest
     build: .
     ports:
       - "3000:3000"
-    env_file:
-      - .env
+    environment:
+      - QUANT_API_TOKEN=${QUANT_API_TOKEN:-}
+      - QUANT_ORGANISATION=${QUANT_ORGANISATION:-}
+      - QUANT_BASE_URL=${QUANT_BASE_URL:-https://dashboard.quantcdn.io}
+      - QUANT_SYSTEM_PROMPT=${QUANT_SYSTEM_PROMPT:-You are a helpful assistant.}
+      - QUANT_DEFAULT_MODEL=${QUANT_DEFAULT_MODEL:-amazon.nova-lite-v1:0}
+      - PORT=${PORT:-3001}
