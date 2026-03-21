@@ -440,6 +440,54 @@ body {
   color: var(--text-muted);
 }
 
+/* ─── Setup banner ───────────────────────────────────── */
+
+.setup-banner {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+  padding: 40px 24px;
+  max-width: var(--col);
+  margin: 0 auto;
+  animation: fade-in 0.8s ease both;
+}
+
+.setup-banner h2 {
+  font-family: 'DM Serif Display', Georgia, serif;
+  font-size: 28px;
+  font-weight: 400;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.setup-banner p {
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  max-width: 480px;
+}
+
+.setup-missing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.setup-missing code {
+  background: var(--error-bg);
+  border: 1px solid rgba(239,68,68,0.2);
+  color: var(--error-fg);
+  padding: 5px 14px;
+  border-radius: 8px;
+  font-family: 'DM Mono', 'Fira Code', monospace;
+  font-size: 13px;
+}
+
 /* ─── Error bar ───────────────────────────────────────── */
 
 .error-bar {

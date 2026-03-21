@@ -62,26 +62,32 @@ function App() {
   const [error, setError]                 = useState(null);
   const [attachments, setAttachments]     = useState([]);
   const [dragActive, setDragActive]       = useState(false);
+  const [setupError, setSetupError]       = useState(null);
   const pollRef    = useRef(null);
   const fileInputRef = useRef(null);
 
   // Load config, models, and agents on mount
   useEffect(() => {
-    Promise.all([
-      fetch('/api/config').then((r) => r.json()).catch(() => ({})),
-      fetch('/api/models').then((r) => r.json()).catch(() => null),
-      fetch('/api/agents').then((r) => r.json()).catch(() => null),
-    ]).then(([configData, modelsData, agentsData]) => {
-      const defaultModelId = configData.defaultModel ?? 'amazon.nova-lite-v1:0';
-      if (modelsData) {
-        const list = modelsData.models ?? [];
-        setModels(list);
-        const preferred = list.find((m) => m.id === defaultModelId) ?? list[0];
-        setSelectedModel(preferred?.id ?? null);
-      } else {
-        setError('Failed to load models');
+    fetch('/api/config').then((r) => r.json()).catch(() => ({})).then((configData) => {
+      if (!configData.configured) {
+        setSetupError(configData.missing ?? []);
+        return;
       }
-      setAgents(agentsData ? (agentsData.agents ?? []) : []);
+      const defaultModelId = configData.defaultModel ?? 'amazon.nova-lite-v1:0';
+      Promise.all([
+        fetch('/api/models').then((r) => { if (!r.ok) throw new Error(); return r.json(); }).catch(() => null),
+        fetch('/api/agents').then((r) => { if (!r.ok) throw new Error(); return r.json(); }).catch(() => null),
+      ]).then(([modelsData, agentsData]) => {
+        if (modelsData?.models) {
+          const list = modelsData.models;
+          setModels(list);
+          const preferred = list.find((m) => m.id === defaultModelId) ?? list[0];
+          setSelectedModel(preferred?.id ?? null);
+        } else {
+          setError('Failed to load models');
+        }
+        setAgents(agentsData ? (agentsData.agents ?? []) : []);
+      });
     });
   }, []);
 
@@ -344,6 +350,26 @@ function App() {
       return prev.filter((a) => a.id !== id);
     });
   }, []);
+
+  if (setupError) {
+    return html`
+      <div class="app">
+        <div class="app-header">
+          <span class="logo">quant<em>AI</em></span>
+        </div>
+        <div class="chat-window" role="log">
+          <div class="setup-banner">
+            <h2>Configuration Required</h2>
+            <p>This application needs environment variables to connect to the Quant AI API.</p>
+            <div class="setup-missing">
+              ${setupError.map((v) => html`<code key=${v}>${v}</code>`)}
+            </div>
+            <p>Set these as <strong>environment variables</strong> or <strong>secrets</strong> in your Quant Cloud application settings, then redeploy.</p>
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
   return html`
     <div class="app">

@@ -69,18 +69,32 @@ app.get('/', (c) => c.html(INDEX_HTML));
 
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
-// Guard routes that require QUANT_ORGANISATION
-const requireOrg: MiddlewareHandler = async (c, next) => {
-  if (!ORG) return c.json({ error: 'QUANT_ORGANISATION not set' }, 500);
+// Check which required env vars are missing
+const REQUIRED_VARS = ['QUANT_API_TOKEN', 'QUANT_ORGANISATION'] as const;
+function getMissingVars(): string[] {
+  return REQUIRED_VARS.filter((v) => !process.env[v]);
+}
+
+// Guard routes that require configuration
+const requireConfig: MiddlewareHandler = async (c, next) => {
+  const missing = getMissingVars();
+  if (missing.length) return c.json({ error: 'configuration_required', missing }, 500);
   await next();
 };
-app.use('/api/models', requireOrg);
-app.use('/api/agents', requireOrg);
-app.use('/api/sessions', requireOrg);
-app.use('/api/chat/*', requireOrg);
+app.use('/api/models', requireConfig);
+app.use('/api/agents', requireConfig);
+app.use('/api/sessions', requireConfig);
+app.use('/api/chat/*', requireConfig);
 
-// Expose non-secret config values to the frontend
-app.get('/api/config', (c) => c.json({ defaultModel: DEFAULT_MODEL }));
+// Expose non-secret config values and setup status to the frontend
+app.get('/api/config', (c) => {
+  const missing = getMissingVars();
+  return c.json({
+    defaultModel: DEFAULT_MODEL,
+    configured: missing.length === 0,
+    missing,
+  });
+});
 
 app.get('/api/models', async (c) => {
   const fresh = modelsCache && Date.now() - modelsCache.at < CACHE_TTL_MS;
